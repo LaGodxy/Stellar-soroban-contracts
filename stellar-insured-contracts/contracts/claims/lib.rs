@@ -1,11 +1,10 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, contracterror, Address, Env, Symbol, symbol_short};
+use soroban_sdk::{contract, contractimpl, contracterror, Address, Env, Symbol, symbol_short, IntoVal};
 
 // Import the Policy contract interface to verify ownership and coverage
 mod policy_contract {
     soroban_sdk::contractimport!(file = "../../target/wasm32-unknown-unknown/release/policy_contract.wasm");
 }
-use soroban_sdk::{contract, contractimpl, contracterror, Address, Env, Symbol, IntoVal};
 
 // Import shared types from the common library
 use insurance_contracts::types::ClaimStatus;
@@ -106,12 +105,11 @@ impl ClaimsContract {
 
         env.storage()
             .persistent()
-            .set(&(CLAIM, claim_id), &(policy_id, claimant.clone(), amount, 0u32, current_time));
+            .set(&(CLAIM, claim_id), &(policy_id, claimant.clone(), amount, ClaimStatus::Submitted, current_time));
         
         env.storage()
             .persistent()
             .set(&(POLICY_CLAIM, policy_id), &claim_id);
-            .set(&(CLAIM, claim_id), &(policy_id, claimant.clone(), amount, ClaimStatus::Submitted, current_time));
 
         env.events().publish(
             (symbol_short!("clm_sub"), claim_id),
@@ -151,6 +149,19 @@ impl ClaimsContract {
             return Err(ContractError::InvalidState);
         }
 
+        let config: (Address, Address) = env
+            .storage()
+            .persistent()
+            .get(&CONFIG)
+            .ok_or(ContractError::NotInitialized)?;
+        let risk_pool_contract = config.1.clone();
+
+        env.invoke_contract::<()>(
+            &risk_pool_contract,
+            &Symbol::new(&env, "reserve_liquidity"),
+            (claim_id, claim.2).into_val(&env),
+        );
+
         claim.3 = ClaimStatus::Approved;
 
         env.storage()
@@ -172,10 +183,7 @@ impl ClaimsContract {
             .get(&ADMIN)
             .ok_or(ContractError::NotInitialized)?;
 
-        let caller = env.current_contract_address();
-        if caller != admin {
-            return Err(ContractError::Unauthorized);
-        }
+        admin.require_auth();
 
         let mut claim: (u64, Address, i128, ClaimStatus, u64) = env
             .storage()
@@ -209,10 +217,7 @@ impl ClaimsContract {
             .get(&ADMIN)
             .ok_or(ContractError::NotInitialized)?;
 
-        let caller = env.current_contract_address();
-        if caller != admin {
-            return Err(ContractError::Unauthorized);
-        }
+        admin.require_auth();
 
         let mut claim: (u64, Address, i128, ClaimStatus, u64) = env
             .storage()
@@ -246,10 +251,7 @@ impl ClaimsContract {
             .get(&ADMIN)
             .ok_or(ContractError::NotInitialized)?;
 
-        let caller = env.current_contract_address();
-        if caller != admin {
-            return Err(ContractError::Unauthorized);
-        }
+        admin.require_auth();
 
         let mut claim: (u64, Address, i128, ClaimStatus, u64) = env
             .storage()
@@ -273,8 +275,8 @@ impl ClaimsContract {
         // Call risk pool to payout the claim amount
         env.invoke_contract::<()>(
             &risk_pool_contract,
-            &Symbol::new(&env, "payout_claim"),
-            (claim.1.clone(), claim.2).into_val(&env),
+            &Symbol::new(&env, "payout_reserved_claim"),
+            (claim_id, claim.1.clone()).into_val(&env),
         );
 
         claim.3 = ClaimStatus::Settled;
